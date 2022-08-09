@@ -1,5 +1,5 @@
 import { Controller, Get, Post, Delete, Param, Redirect, Body, Query } from '@nestjs/common';
-import { Ctx, PluginCommonModule, RequestContext, OrderService, VendurePlugin, Order, ProductVariant, ProductVariantService, ChannelService, TransactionalConnection, Channel, EntityHydrator, ShippingLine, ShippingMethod, ID } from '@vendure/core';
+import { Ctx, PluginCommonModule, RequestContext, OrderService, VendurePlugin, Order, ProductVariant, ProductVariantService, ChannelService, TransactionalConnection, Channel, EntityHydrator, ShippingLine, ShippingMethod, ID, isGraphQlErrorResult } from '@vendure/core';
 import { AppStripeModule } from './stripemodule';
 
 import Stripe from 'stripe';
@@ -13,17 +13,23 @@ import { CreateAddressInput } from 'src/plugins/reviews/generated-shop-types';
 
 //This is called by stripe once the order has gone through and it will update the order
 //To show that it is complete.  It then needs
+
+interface VariantQuantity {
+    variant : ProductVariant,
+    quantity : number
+}
+
 @Controller('stripe-webhook')
 export class StripeWebhookController {
     constructor(@InjectStripe() private readonly stripeClient: Stripe, private orderService: OrderService, private productVariantService: ProductVariantService, private entityHydratorService: EntityHydrator,  private channelService: ChannelService, private connection: TransactionalConnection) {}
     @Post()
     async stripeWebhook(@Body() param: any, @Ctx() ctx: RequestContext) {
-        console.log(param.type);
+      
 
         if (param.type === 'charge.succeeded') {
             console.log("seen a charge succeeded!");
             const { data } = param;
-            console.log(data);
+            
 
             const { object } = data;
             const { metadata, id } = object;
@@ -39,35 +45,41 @@ export class StripeWebhookController {
             const order = await this.orderService.findOneByCode(ctx, orderId);
 
             console.log("---------------  order --------------");
-            console.log(order);
+            console.log("payment for", order?.id);
             console.log("--------------------------------------");
 
             const {lines} = order as Order;
-            const variants:ProductVariant[]  = lines.map(l=>l.productVariant);
+            const variants: VariantQuantity[]  = lines.map(l=>{
+                console.log("l quantity is", l.quantity);
+                return {
+                         variant: l.productVariant, 
+                         quantity:l.quantity
+                }
+            });
 
             const channellist : Channel[] =  [];
-            let variantsbyvendor: {[key:string]:ProductVariant[]} = {};  //we use this to create new orders by variant
+            let variantsbyvendor: {[key:string]:VariantQuantity[]} = {};  //we use this to create new orders by variant
 
-            for (const variant of variants){
-                const channels = await this.productVariantService.getProductVariantChannels(ctx, variant.id);
+            for (const vq of variants){
+                const channels = await this.productVariantService.getProductVariantChannels(ctx, vq.variant.id);
                 channels.filter(v=>v.code!="__default_channel__").forEach(c=>{
                     if (channellist.map(c=>c.code).indexOf(c.code) == -1){
                         channellist.push(c);
-                        variantsbyvendor[c.id] = [...(variantsbyvendor[c.id]||[]), variant]
+                        variantsbyvendor[c.id] = [...(variantsbyvendor[c.id]||[]), vq]
                     }
                 })
             } 
 
             console.log("vendors in this order are", channellist.map(c=>c.code));
-
+            const defaultchannel = await this.channelService.getDefaultChannel();
             //if we have multiple vendors responsible for items in this order we need to split the order into sub-orders
             if (channellist.length > 1 && order?.id){ //check for order.id to stop typescript complaining
             
                 for (const channelId of Object.keys(variantsbyvendor)){
                     let neworder = await this.orderService.create(ctx);
 
-
                      //set the channel of this order!
+                    neworder.channels = [defaultchannel];
                     const channel = await this.connection.getEntityOrThrow(ctx, Channel, channelId);
                     neworder.channels.push(channel);
                    
@@ -77,8 +89,15 @@ export class StripeWebhookController {
 
                     await this.connection.getRepository(ctx, Order).save(neworder, { reload: false });
 
-                    for (const pv of variantsbyvendor[channelId]){
-                         await this.orderService.addItemToOrder(ctx, neworder.id, pv.id, 1); //TODO - record the product variant quantity too
+                    let vendorprice = 0;
+
+                    for (const vc of variantsbyvendor[channelId]){
+                        console.log("------------");
+                        console.log(vc.variant.sku, vc.quantity);
+                        const {price} = vc.variant.productVariantPrices.filter(pvp=>pvp.channelId==channelId)[0];
+                        console.log("------------");
+                        vendorprice += price;
+                        await this.orderService.addItemToOrder(ctx, neworder.id, vc.variant.id, vc.quantity); //TODO - record the product variant quantity too
                     }
 
                     const { fullName:sfullName="", company:scompany="", streetLine1:sstreetLine1="",city:scity="", postalCode:spostalCode="", countryCode:scountryCode=""} = order.shippingAddress;
@@ -118,11 +137,15 @@ export class StripeWebhookController {
                     const  trans = await this.orderService.transitionToState(ctx, neworder.id, 'ArrangingPayment');
                     await this.orderService.setBillingAddress(ctx,neworder.id,billingaddress);
                     
-                   
-                    console.log("adding payment to order!");
+                
                     const result = await this.orderService.addPaymentToOrder(ctx, neworder.id, input);
-                    console.log("-----------done---------");
-                    console.log(result);
+                    
+                    if (!isGraphQlErrorResult(result)) { //guard to stop typescript complaining!
+                        console.log(result.code);
+                        console.log("subtotal", result.subTotalWithTax);
+                        console.log("shipping", result.shippingWithTax);
+                        console.log("vendor price is", vendorprice);
+                    }
                     console.log("--------------------------");
                 }
             }

@@ -23,7 +23,7 @@ export class PaymentIntentController {
     //pull out query (orderId) here and then pass back chcekout data
     @Post()
     async paymentIntent(@Body() param: OrderParam, @Ctx() ctx: RequestContext) {
-        console.log('have body', param);
+       
         const { orderId = '' } = param;
         const order = await this.orderService.findOneByCode(ctx, orderId);
         const params: Stripe.PaymentIntentCreateParams = {
@@ -36,10 +36,9 @@ export class PaymentIntentController {
                 reference: orderId,
             },
         };
-        console.log('created payment intent for order id', orderId);
+      
         const payment_intent: Stripe.PaymentIntent = await this.stripeClient.paymentIntents.create(params);
         const { client_secret: token } = payment_intent;
-        console.log('returning token!!', token);
         return { token };
     }
 
