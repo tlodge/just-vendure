@@ -30,9 +30,9 @@ export class AccountConnectionService {
     async fetchByChannelId(ctx: RequestContext, channelId: ID) {
         return this.connection.rawConnection
             .createQueryBuilder()
-            .select('userId')
-            .addSelect('channelId')
-            .addSelect('account')
+            .select("connection.userId")
+            .addSelect("connection.channelId")
+            .addSelect("connection.account")
             .from(AccountConnection, 'connection')
             .where('connection.channelId = :channelId', { channelId: channelId })
             .getRawOne();

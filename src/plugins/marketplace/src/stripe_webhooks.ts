@@ -1,10 +1,12 @@
 import { Controller, Get, Post, Delete, Param, Redirect, Body, Query } from '@nestjs/common';
-import { Ctx, PluginCommonModule, RequestContext, OrderService, VendurePlugin, Order, ProductVariant, ProductVariantService, ChannelService, TransactionalConnection, Channel, EntityHydrator, ShippingLine, ShippingMethod, ID, isGraphQlErrorResult } from '@vendure/core';
+import { Ctx, PluginCommonModule, RequestContext, OrderService, VendurePlugin, Order, ProductVariant, ProductVariantService, ChannelService, TransactionalConnection, Channel, ShippingMethod, isGraphQlErrorResult } from '@vendure/core';
+import { AccountConnectionService } from './services/AccountConnectionService';
 import { AppStripeModule } from './stripemodule';
 
 import Stripe from 'stripe';
 import { InjectStripe } from 'nestjs-stripe';
 import { CreateAddressInput } from 'src/plugins/reviews/generated-shop-types';
+
 
 
 //TODO:
@@ -21,7 +23,7 @@ interface VariantQuantity {
 
 @Controller('stripe-webhook')
 export class StripeWebhookController {
-    constructor(@InjectStripe() private readonly stripeClient: Stripe, private orderService: OrderService, private productVariantService: ProductVariantService, private entityHydratorService: EntityHydrator,  private channelService: ChannelService, private connection: TransactionalConnection) {}
+    constructor(@InjectStripe() private readonly stripeClient: Stripe, private orderService: OrderService, private accountConnectionService: AccountConnectionService, private productVariantService: ProductVariantService,  private channelService: ChannelService, private connection: TransactionalConnection) {}
     @Post()
     async stripeWebhook(@Body() param: any, @Ctx() ctx: RequestContext) {
       
@@ -147,79 +149,48 @@ export class StripeWebhookController {
                         console.log("vendor price is", vendorprice);
                     }
                     console.log("--------------------------");
+
+                    /*
+                     * Now disburse the money to the relevant connected account!!
+                     */
+                    const connectedAccount = await this.accountConnectionService.fetchByChannelId(ctx, channelId);
+                    console.log("have connectd account", connectedAccount);
                 }
+                /*
+                 * AT THIS POINT WE HAVE CREATED TWO NEW ORDERS AND WE HAVE ADDED THE RELEVANT PAYMENTS TO THEM.  
+                 * HOWEVER THE CLIENT WILL ONLY BE MONITORING THE ORIGINAL 
+                 * ORDER, SO WE NEED TO ALSO UPDATE THIS TO CLOSE IT!
+                 */
+                const addresult = await this.orderService.addPaymentToOrder(ctx, order.id, input);
+
+                
             }
+
             // if we have a single vendor responsible for all items in this order then we need to make sure that this order is assigned to the vendor's channel
             // note we can't do this with the channelservice as the order needs to be hydrated prior to updating!
             else if (channellist.length == 1 && order?.id){
-                const entity = await this.connection.getEntityOrThrow(ctx, Order, order.id, {relations: ['channels']}); //TODO can we not just add lines and shipping lines to this?
-                                                                                                                        //and this might even then allow us to use the channelserive
-                                                                                                                        //to assign the order to channels rather than doing it manually?
+                const entity = await this.connection.getEntityOrThrow(ctx, Order, order.id, {relations: ['channels', 'lines', 'shippingLines']}); 
+                
+                //we need to manually add this order to the vendor's channel as this.channelService.assignToChannels
+                //does not work with orders since they need to be hydrated!
                 const channel = await this.connection.getEntityOrThrow(ctx, Channel, channellist[0].id);
                 entity.channels.push(channel);
-                const hydratedentity = await this.entityHydratorService.hydrate(ctx, entity, { relations: ['lines', 'shippingLines'] })
+                await this.connection.getRepository(ctx, Order).save(entity, { reload: false });
                 
-                //now we need to assign the hydratedentity's shipping method to this channel if it doesn't already exist!!
-                for (const shippingLine of hydratedentity.shippingLines){
-                    console.log("assigning shipping lines to method!", shippingLine?.shippingMethodId);
+                //if the shipping lines that were chosen (which belong to the default channel), do not exist for this 
+                //vendor's channel then add them here
+                for (const shippingLine of entity.shippingLines){
                     if (shippingLine?.shippingMethodId){
                         await this.channelService.assignToChannels(ctx,ShippingMethod,shippingLine?.shippingMethodId, [channellist[0].id]);
                     }
                 }
-                //finally we can save the order!
-                await this.connection.getRepository(ctx, Order).save(hydratedentity, { reload: false });
-
-              
-                const  trans = await this.orderService.transitionToState(ctx, hydratedentity.id, 'ArrangingPayment');
-             
-                console.log("adding payment to order", hydratedentity.id);
-                const result = await this.orderService.addPaymentToOrder(ctx, order.id, input);
-                console.log("done", result);
+                
+                //finally update the  payment details for this order!
+                await this.orderService.transitionToState(ctx, entity.id, 'ArrangingPayment');
+                await this.orderService.addPaymentToOrder(ctx, order.id, input);
             }
 
-            /*for (const variant of variants){
-               const channels = await this.productVariantService.getProductVariantChannels(ctx, variant.id);
-               const vendors = channels.filter(v=>v.code!="__default_channel__");
-               
-               if (order?.id && vendors.length > 0){
-                const entity = await this.connection.getEntityOrThrow(ctx, Order, order.id, {
-                    relations: ['channels'],
-                });
-
-                if (vendors.length == 1){
-                    
-                        const channel = await this.connection.getEntityOrThrow(ctx, Channel, vendors[0].id);
-                        entity.channels.push(channel);
-                        const _entity = await this.entityHydratorService.hydrate(ctx, entity, { relations: ['lines', 'shippingLines'] })
-                        
-
-                        console.log(_entity);
-                        //now we need to assign the _entity's shipping method to this channel if it doesn't already exist!!
-                        for (const shippingLine of _entity.shippingLines){
-                            console.log("assigning shipping lines to method!", shippingLine?.shippingMethodId);
-                            if (shippingLine?.shippingMethodId){
-                                await this.channelService.assignToChannels(ctx,ShippingMethod,shippingLine?.shippingMethodId, [vendors[0].id]);
-                            }
-                        }
-
-                        console.log("** now have entity **");
-                        console.log(_entity);
-                        await this.connection.getRepository(ctx, Order).save(_entity, { reload: false });
-                    
-                        
-                }
-                else {  //this is the multivendor case where we have to create a new set of orders for each product}
-            }
-
-            }*/
-          
-            //if (order) {
-            //    await this.orderService.addPaymentToOrder(ctx, order.id, input);
-                //think we need a service here that creates new orders based on channel ids.
-            //    const _order = await this.orderService.findOne(ctx, order.id);
-             //   console.log("-->ok original order", _order);
-            //}
-            //now we need to look up the products and merchants and disburse the money - r do we only do this once the order has
+            //now we need to look up the products and merchants and disburse the money - do we only do this once the order has
             //been dispatched?  Think probably best to do it straight away!
         }
         return { success: true };
@@ -229,5 +200,6 @@ export class StripeWebhookController {
 @VendurePlugin({
     imports: [PluginCommonModule, AppStripeModule],
     controllers: [StripeWebhookController],
+    providers: [AccountConnectionService],
 })
 export class StripeWebhookPlugin {}
