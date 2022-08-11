@@ -2,11 +2,9 @@ import { Controller, Post, Delete, Param } from '@nestjs/common';
 import {
     Ctx,
     PluginCommonModule,
-    ProductService,
     RequestContext,
     VendurePlugin,
     UserService,
-    RoleService,
     Channel,
     Role,
 } from '@vendure/core';
@@ -29,18 +27,37 @@ export class ConnectController {
 
     /* This creates a db entry for a stripe connect link (user, channel, connection url)
     which will then be used to disburse payments to vendors when one of their items has
-    been purchased on the store*/
+    been purchased on the store, called by the ui-extensions react app!*/
     @Post()
     async create(@Ctx() ctx: RequestContext) {
-        const account = await this.stripeClient.accounts.create({ type: 'express' });
-        console.log('TOKEN', ctx.session?.token);
-        const { id } = account;
-        const user = await this.userService.getUserById(ctx, ctx.activeUserId || 1);
+       
+        let id;
+        const connectedaccount = await this.accountConnectionService.fetchByUserId(ctx, ctx.activeUserId || -1);
+        
+        if (connectedaccount){
+            console.log("have connected account", connectedaccount);
+            id = connectedaccount.id;
+        }
+        else{
+            console.log("generating new connected account!");
+            const account = await this.stripeClient.accounts.create({ type: 'express' });
+            id  = account.id;
 
-        //strip out the non-default channel that this user is assigned to.
-        const channels = (user?.roles || []).reduce((acc: Channel[], role: Role) => {
-            return [...acc, ...role.channels.filter((c: Channel) => c.id !== 1)];
-        }, [] as Channel[]);
+            const user = await this.userService.getUserById(ctx, ctx.activeUserId || 1);
+             //strip out the non-default channel that this user is assigned to.
+            const channels = (user?.roles || []).reduce((acc: Channel[], role: Role) => {
+                return [...acc, ...role.channels.filter((c: Channel) => c.id !== 1)];
+            }, [] as Channel[]);
+
+            if (user && user.id && channels.length > 0) {
+                console.log('creating link!!', channels[0].id, user.id, id);
+                this.accountConnectionService.createLink(ctx, channels[0].id, user.id, id);
+            }else{
+                console.log("this user doesn't have a channel!")
+            }
+        }
+
+        console.log("creating connected account link for id", id);
 
         const accountLink = await this.stripeClient.accountLinks.create({
             account: id,
@@ -49,15 +66,7 @@ export class ConnectController {
             type: 'account_onboarding',
         });
 
-        if (user && user.id && channels.length > 0) {
-            console.log('creating link!!', channels[0].id, user.id, accountLink.url);
-            this.accountConnectionService.createLink(ctx, channels[0].id, user.id, accountLink.url);
-        }else{
-            console.log("this used doesn't have a channel!")
-        }
         return { link: accountLink };
-        //return
-        // this.productService.findAll(ctx);
     }
 
     @Delete(':id')

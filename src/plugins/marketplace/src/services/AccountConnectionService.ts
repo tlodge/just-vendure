@@ -30,11 +30,21 @@ export class AccountConnectionService {
     async fetchByChannelId(ctx: RequestContext, channelId: ID) {
         return this.connection.rawConnection
             .createQueryBuilder()
-            .select("connection.userId")
-            .addSelect("connection.channelId")
-            .addSelect("connection.account")
+            .select("connection.userId", "userId")
+            .addSelect("connection.channelId", "channelId")
+            .addSelect("connection.account", "id")
             .from(AccountConnection, 'connection')
             .where('connection.channelId = :channelId', { channelId: channelId })
+            .getRawOne();
+    }
+
+    async fetchByUserId(ctx: RequestContext, userId: ID) {
+        return this.connection.rawConnection
+            .createQueryBuilder()
+            .select("connection.account", "id")
+            .addSelect("connection.channelId", "channelId")
+            .from(AccountConnection, 'connection')
+            .where('connection.userId = :userId', { userId: userId })
             .getRawOne();
     }
 }
