@@ -747,14 +747,9 @@ export class NewVendorPlugin implements OnApplicationBootstrap {
                 
                 //NEED TO ALSO UPDATE user_roles_role!!! - hopefully this does it!
                 //TODO!! NEED TO unassign old role too!!
-                await this.administratorService.assignRole(ctx, id, _nr.id);
-
-                 //or perhaps we need to do an adminstratorService.update!
-                /*const update:UpdateActiveAdministratorInput = {
-                    
-                }
-               
-                await this.administratorService.update(ctx, update)*/
+                
+                 // do an adminstratorService.update to assign new role!
+                await this.administratorService.update(ctx, {id, roleIds:[_nr.id]})
             }
         // do some action when this event fires
       });
