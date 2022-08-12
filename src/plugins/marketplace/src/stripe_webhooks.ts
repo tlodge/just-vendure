@@ -1,34 +1,25 @@
-import { Controller, Get, Post, Delete, Param, Redirect, Body, Query } from '@nestjs/common';
-import { Ctx, PluginCommonModule, RequestContext, OrderService, VendurePlugin, Order, ProductVariant, ProductVariantService, ChannelService, TransactionalConnection, Channel, ShippingMethod, isGraphQlErrorResult } from '@vendure/core';
+import { Controller, Post, Body, } from '@nestjs/common';
+import { Ctx, PluginCommonModule, RequestContext, OrderService, VendurePlugin, ProductVariantService, ChannelService, TransactionalConnection, isGraphQlErrorResult } from '@vendure/core';
 import { AccountConnectionService } from './services/AccountConnectionService';
 import { AppStripeModule } from './stripemodule';
 
 import Stripe from 'stripe';
 import { InjectStripe } from 'nestjs-stripe';
-import { CreateAddressInput } from 'src/plugins/reviews/generated-shop-types';
-
-
-
-//TODO:
-
-//Sometimes need to delete cookies in browser else do NOT get customer!
+import { SubAccountService } from './services/SubAccountService';
 
 //This is called by stripe once the order has gone through and it will update the order
 //To show that it is complete.  It then needs
-
-interface VariantQuantity {
-    variant : ProductVariant,
-    quantity : number
-}
 
 @Controller('stripe-webhook')
 export class StripeWebhookController {
     constructor(@InjectStripe() private readonly stripeClient: Stripe, 
                                 private orderService: OrderService, 
                                 private accountConnectionService: AccountConnectionService, 
+                                private subAccountService : SubAccountService,
                                 private productVariantService: ProductVariantService,  
                                 private channelService: ChannelService, 
                                 private connection: TransactionalConnection) {}
+
     @Post()
     async stripeWebhook(@Body() param: any, @Ctx() ctx: RequestContext) {
       
@@ -50,26 +41,37 @@ export class StripeWebhookController {
             };
 
             const order = await this.orderService.findOneByCode(ctx, orderId);
-            await this.orderService.addPaymentToOrder(ctx, order?.id || -1, input);
 
-            //so at this point we need to update the state of this order's sub-orders!
-            //so these need to be recorded in when the payment intent is created!
 
-             /*const result = await this.orderService.addPaymentToOrder(ctx, neworder.id, input);
-                
+            console.log("---------- webhooks have order -----------");
+            console.log(order);
+            console.log("---------------------------------");            
+
+            console.log("adding payment to order");
+            const success = await this.orderService.addPaymentToOrder(ctx, order?.id || -1, input);
+
+            if (!isGraphQlErrorResult(success)) { 
+                console.log("successfully updated payment to order ", order?.id);
+            }else{
+                console.log("error");
+                console.log(success);
+            }
+
+            const subaccounts = await this.subAccountService.fetchByParentId(ctx, order?.id || -1);
+
+            console.log("have subaccounts!!", subaccounts)
+            
+            for (const subaccount of subaccounts){
+                const result = await this.orderService.addPaymentToOrder(ctx, subaccount.childId, input);
+                console.log("have subaccount", subaccount);
                 if (!isGraphQlErrorResult(result)) { //guard to stop typescript complaining!
                     console.log(result.code);
                     console.log("subtotal", result.subTotalWithTax);
                     console.log("shipping", result.shippingWithTax);
-                    console.log("vendor price is", vendorprice);
+                }else{
+                    console.log(result);
                 }
-                console.log("--------------------------");
-                */
-
-
-            
-            //now we need to look up the products and merchants and disburse the money - do we only do this once the order has
-            //been dispatched?  Think probably best to do it straight away!
+            }
         }
         return { success: true };
     }
@@ -78,6 +80,6 @@ export class StripeWebhookController {
 @VendurePlugin({
     imports: [PluginCommonModule, AppStripeModule],
     controllers: [StripeWebhookController],
-    providers: [AccountConnectionService],
+    providers: [AccountConnectionService, SubAccountService]
 })
 export class StripeWebhookPlugin {}

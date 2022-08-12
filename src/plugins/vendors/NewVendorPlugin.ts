@@ -1,5 +1,6 @@
 import { OnApplicationBootstrap } from '@nestjs/common';
-import { AdministratorEvent, Channel, ChannelService, CurrencyCode, EventBus, FacetService, FacetValue, FacetValueService, isGraphQlErrorResult, LanguageCode, PluginCommonModule, Role, RoleEvent, RoleService, Translated, translateDeep, VendurePlugin } from '@vendure/core';
+import { AdministratorEvent, AdministratorService, Channel, ChannelService, CurrencyCode, EventBus, FacetService, FacetValue, FacetValueService, isGraphQlErrorResult, LanguageCode, PluginCommonModule, Role, RoleEvent, RoleService, Translated, translateDeep, VendurePlugin } from '@vendure/core';
+import { UpdateActiveAdministratorInput } from '../reviews/generated-admin-types';
 //import { filter } from 'rxjs/operators';
 
 
@@ -648,7 +649,7 @@ const gentoken = (length:Number)=>{
 })
 export class NewVendorPlugin implements OnApplicationBootstrap {
 
-  constructor(private eventBus: EventBus, private facetService: FacetService, private facetValueService: FacetValueService, private channelService: ChannelService, private roleService: RoleService ) {}
+  constructor(private eventBus: EventBus, private facetService: FacetService, private administratorService:AdministratorService, private facetValueService: FacetValueService, private channelService: ChannelService, private roleService: RoleService ) {}
 
   async onApplicationBootstrap() {
 
@@ -676,15 +677,16 @@ export class NewVendorPlugin implements OnApplicationBootstrap {
 
                const channel = await this.channelService.create(ctx, input) 
                if (isGraphQlErrorResult(channel)) {
-                 return;
+                    console.log("error creating channel!!", channel);
+                    return;
                }
-
+               console.log("have created a new channel", channel);
              
                //now add facets to this new channel, so that this new user can use them!  
                const facets = await this.facetService.findAll(ctx);
     
                 for (const facet of facets.items){
-                    //add an assertion to stop typescript complaining.  From author:
+                    //add an assertion (as Channel) to stop typescript complaining.  From author:
                     //the reason TS complains is that the facetService.findAll() method returns Translated<Facet> which recursively affects nested entities like Channel too. 
                     //In this case it is totally safe to use an assertion as Channel to make TS happy
                     
@@ -695,29 +697,64 @@ export class NewVendorPlugin implements OnApplicationBootstrap {
                 const facetvalues = await this.facetValueService.findAll(LanguageCode.en);
 
                 for (const fv of facetvalues){
-                    this.channelService.assignToChannels(ctx, FacetValue, fv.id, [channel.id]);
+                    await this.channelService.assignToChannels(ctx, FacetValue, fv.id, [channel.id]);
                 }
-
+ 
+                /*
+                *   roleService.getRoleByCode(code) is private so instead need to pull out
+                *    all roles and find the  one for which the code matches
+                */
+             
                 const roles = await this.roleService.findAll(ctx);
+
                 const role = roles.items.reduce((acc:Role,item:Role)=>{
                     if (item.code==="vendor")
                         return item;
                     return acc;
                 },{} as Role);
 
+
                 const nr = {
                     code:channel.code, 
                     permissions: role.permissions,
-                    description: role.description,
+                    description: channel.code,
                 }
 
-                console.log("creating a new role", nr);
                 const _nr = await this.roleService.create(ctx,nr);
+
+
+                console.log("created a new role", _nr);
+
                 //now create a new role from copying vendor role and assign it to the new channel!
                 //now assign role to channel!
-                await this.roleService.assignRoleToChannel(ctx, _nr.id, channel.id);
+
+                //*************************************************************************************************** */
+                //We need to add an entry for roleId 1 (superadmin role) into role_channels_channel
+                //************************************************************************************************** */
+                const result = await this.roleService.assignRoleToChannel(ctx, 1, channel.id);
+
+             
+                //assign it to the default channel - this is essential for it to work!!
+                const result2 = await this.roleService.assignRoleToChannel(ctx, _nr.id, channel.id);
+               
                 //take off the default channel!
                 await this.channelService.removeFromChannels(ctx, Role, _nr.id, [1]);
+
+
+                //This all works - last issue is that the Admin screen still shows the initially chosen vendor role 
+                //Wonder if this is set back after this plugin is called?  Though the role_channel_channels table
+                //seems to be correct at this point??
+                
+                //NEED TO ALSO UPDATE user_roles_role!!! - hopefully this does it!
+                //TODO!! NEED TO unassign old role too!!
+                await this.administratorService.assignRole(ctx, id, _nr.id);
+
+                 //or perhaps we need to do an adminstratorService.update!
+                /*const update:UpdateActiveAdministratorInput = {
+                    
+                }
+               
+                await this.administratorService.update(ctx, update)*/
             }
         // do some action when this event fires
       });

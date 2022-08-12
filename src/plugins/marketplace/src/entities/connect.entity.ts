@@ -1,5 +1,5 @@
 /* eslint-disable @typescript-eslint/no-unused-vars */
-import { DeepPartial, ID, VendureEntity, Channel, User } from '@vendure/core';
+import { DeepPartial, VendureEntity, Channel, User } from '@vendure/core';
 import { Column, Entity, ManyToOne } from 'typeorm';
 
 @Entity()
